@@ -1110,7 +1110,20 @@ async def list_events_command(ctx: commands.Context):
         )
     )
 
+@bot.event
+async def on_scheduled_event_delete(event: discord.ScheduledEvent):
+    cursor.execute(
+        """
+        UPDATE flights
+        SET status = 'cancelled'
+        WHERE event_id = ?
+        """,
+        (event.id,),
+    )
+    db.commit()
 
+    await update_departure_schedule_message()
+    
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user} | Vertex Air Customer Core online")
