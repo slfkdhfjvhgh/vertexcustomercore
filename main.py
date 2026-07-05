@@ -1109,9 +1109,10 @@ async def list_events_command(ctx: commands.Context):
             f"The flight schedule has been posted again in {departure_channel.mention}.",
         )
     )
-@tasks.loop(minutes=5)
-async def refresh_schedule():
-    await update_departure_schedule_message()
+
+@refresh_schedule.before_loop
+async def before_refresh_schedule():
+    await bot.wait_until_ready()
 
 
 @refresh_schedule.before_loop
@@ -1121,9 +1122,6 @@ async def before_refresh_schedule():
 
 @bot.event
 async def on_ready():
-    if not refresh_schedule.is_running():
-        refresh_schedule.start()
-
     print(f"Logged in as {bot.user} | Vertex Air Customer Core online")
 
 
