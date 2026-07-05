@@ -1073,7 +1073,42 @@ async def lock_command(ctx: commands.Context, *, flight_number: str):
         )
     )
 
+@bot.command(name="list-events")
+async def list_events_command(ctx: commands.Context):
+    if not isinstance(ctx.author, discord.Member) or not is_operations_staff(ctx.author):
+        await ctx.send(
+            embed=make_embed(
+                f"{VR_CROSS} Permission Denied",
+                "You do not have permission to list Vertex Air flight events.",
+            )
+        )
+        return
 
+    departure_channel = ctx.guild.get_channel(DEPARTURE_CHANNEL_ID)
+
+    if not isinstance(departure_channel, discord.TextChannel):
+        await ctx.send(
+            embed=make_embed(
+                f"{VR_CROSS} Channel Not Found",
+                "The configured departure channel could not be found.",
+            )
+        )
+        return
+
+    # Remove the saved message ID so the bot sends a fresh schedule message.
+    cursor.execute(
+        "DELETE FROM bot_config WHERE key = 'schedule_message_id'"
+    )
+    db.commit()
+
+    await update_departure_schedule_message()
+
+    await ctx.send(
+        embed=make_embed(
+            f"{VR_TICK} Events Listed",
+            f"The flight schedule has been posted again in {departure_channel.mention}.",
+        )
+    )
 @tasks.loop(minutes=5)
 async def refresh_schedule():
     await update_departure_schedule_message()
