@@ -1110,10 +1110,6 @@ async def list_events_command(ctx: commands.Context):
         )
     )
 
-@refresh_schedule.before_loop
-async def before_refresh_schedule():
-    await bot.wait_until_ready()
-
 
 @refresh_schedule.before_loop
 async def before_refresh_schedule():
