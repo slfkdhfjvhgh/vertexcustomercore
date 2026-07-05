@@ -859,6 +859,83 @@ async def schedule_command(ctx: commands.Context):
     if not aircraft:
         return
 
+    try:
+        banner_dm = ctx.author.dm_channel or await ctx.author.create_dm()
+        await banner_dm.send(
+            embed=make_embed(
+                f"{ANNOUNCE} Event Banner",
+                "Please upload the image you want to use as the Discord event banner. "
+                "Send one PNG, JPG, JPEG, or WEBP image.",
+            )
+        )
+    except discord.Forbidden:
+        await ctx.send(
+            embed=make_embed(
+                f"{VR_CROSS} Direct Messages Required",
+                "Please enable direct messages so the event banner can be uploaded.",
+            )
+        )
+        return
+
+    def banner_check(message: discord.Message):
+        return (
+            message.author.id == ctx.author.id
+            and isinstance(message.channel, discord.DMChannel)
+            and len(message.attachments) > 0
+        )
+
+    try:
+        banner_message = await bot.wait_for(
+            "message",
+            check=banner_check,
+            timeout=300,
+        )
+    except asyncio.TimeoutError:
+        await banner_dm.send(
+            embed=make_embed(
+                f"{VR_CROSS} Form Expired",
+                "The scheduling form expired because no event banner was uploaded.",
+            )
+        )
+        return
+
+    banner_attachment = banner_message.attachments[0]
+    allowed_extensions = (".png", ".jpg", ".jpeg", ".webp")
+    content_type = (banner_attachment.content_type or "").lower()
+    filename = banner_attachment.filename.lower()
+
+    if (
+        not content_type.startswith("image/")
+        and not filename.endswith(allowed_extensions)
+    ):
+        await banner_dm.send(
+            embed=make_embed(
+                f"{VR_CROSS} Invalid Banner",
+                "Please upload a PNG, JPG, JPEG, or WEBP image.",
+            )
+        )
+        return
+
+    try:
+        banner_bytes = await banner_attachment.read()
+    except Exception as exc:
+        await banner_dm.send(
+            embed=make_embed(
+                f"{VR_CROSS} Banner Download Failed",
+                f"The banner could not be downloaded.\n\n`{exc}`",
+            )
+        )
+        return
+
+    if len(banner_bytes) > 10 * 1024 * 1024:
+        await banner_dm.send(
+            embed=make_embed(
+                f"{VR_CROSS} Banner Too Large",
+                "Please upload an event banner smaller than 10 MB.",
+            )
+        )
+        return
+
     guild = bot.get_guild(GUILD_ID)
     if not guild:
         await ctx.author.send(
@@ -890,6 +967,7 @@ async def schedule_command(ctx: commands.Context):
             entity_type=discord.EntityType.external,
             privacy_level=discord.PrivacyLevel.guild_only,
             location=game_link[:100],
+            image=banner_bytes,
             reason=f"Flight scheduled by {ctx.author}",
         )
     except Exception as exc:
@@ -938,6 +1016,44 @@ async def schedule_command(ctx: commands.Context):
     )
 
 
+
+
+@bot.command(name="list-events")
+async def list_events_command(ctx: commands.Context):
+    if not isinstance(ctx.author, discord.Member) or not is_operations_staff(ctx.author):
+        await ctx.send(
+            embed=make_embed(
+                f"{VR_CROSS} Permission Denied",
+                "You do not have permission to list Vertex Air flight events.",
+            )
+        )
+        return
+
+    departure_channel = ctx.guild.get_channel(DEPARTURE_CHANNEL_ID)
+    if not isinstance(departure_channel, discord.TextChannel):
+        await ctx.send(
+            embed=make_embed(
+                f"{VR_CROSS} Channel Not Found",
+                "The configured departure channel could not be found.",
+            )
+        )
+        return
+
+    cursor.execute(
+        "DELETE FROM bot_config WHERE key = 'schedule_message_id'"
+    )
+    db.commit()
+
+    await update_departure_schedule_message()
+
+    await ctx.send(
+        embed=make_embed(
+            f"{VR_TICK} Events Listed",
+            f"The flight schedule has been posted again in {departure_channel.mention}.",
+        )
+    )
+
+
 @bot.command(name="unlock")
 async def unlock_command(ctx: commands.Context, *, flight_number: str):
     if not isinstance(ctx.author, discord.Member) or not is_operations_staff(ctx.author):
@@ -980,16 +1096,6 @@ async def unlock_command(ctx: commands.Context, *, flight_number: str):
         )
         return
 
-    announcement_embed = make_embed(
-        f"{ROBLOX} Server Unlocked",
-        (
-            f"{POINTER} Greetings! It is with pleasure that I announce that the server "
-            f"has been unlocked for passengers to join for flight "
-            f"**{FLIGHT} {flight_row['flight_number']}**. "
-            f"Please join through **[this link]({flight_row['game_link']})**."
-        ),
-    )
-
     ghost_ping = await departure_channel.send(
         content="@everyone",
         allowed_mentions=discord.AllowedMentions(everyone=True),
@@ -999,12 +1105,22 @@ async def unlock_command(ctx: commands.Context, *, flight_number: str):
     except Exception:
         pass
 
-    await departure_channel.send(embed=announcement_embed)
+    await departure_channel.send(
+        embed=make_embed(
+            f"{ROBLOX} Server Unlocked",
+            (
+                f"{POINTER} Greetings! It is with pleasure that I announce that the "
+                f"server has been unlocked for passengers to join flight "
+                f"**{FLIGHT} {flight_row['flight_number']}**. "
+                f"Please join through **[this link]({flight_row['game_link']})**."
+            ),
+        )
+    )
 
     await ctx.send(
         embed=make_embed(
             f"{VR_TICK} Server Unlock Announced",
-            f"The server unlock announcement for **{flight_row['flight_number']}** was posted successfully.",
+            f"The unlock announcement for **{flight_row['flight_number']}** was posted.",
         )
     )
 
@@ -1051,64 +1167,26 @@ async def lock_command(ctx: commands.Context, *, flight_number: str):
         )
         return
 
-    announcement_embed = make_embed(
-        f"{INFORMATION} Server Locked",
-        (
-            f"{POINTER} It is with great pleasure I announce that boarding has begun "
-            f"for flight **{FLIGHT} {flight_row['flight_number']}**, and therefore, "
-            "the server has been locked for smooth operations."
-        ),
-    )
-
     await departure_channel.send(
         content="@here",
-        embed=announcement_embed,
+        embed=make_embed(
+            f"{INFORMATION} Server Locked",
+            (
+                f"{POINTER} It is with great pleasure I announce that boarding has "
+                f"begun for flight **{FLIGHT} {flight_row['flight_number']}**, and "
+                "therefore, the server has been locked for smooth operations."
+            ),
+        ),
         allowed_mentions=discord.AllowedMentions(everyone=True),
     )
 
     await ctx.send(
         embed=make_embed(
             f"{VR_TICK} Server Lock Announced",
-            f"The server lock announcement for **{flight_row['flight_number']}** was posted successfully.",
+            f"The lock announcement for **{flight_row['flight_number']}** was posted.",
         )
     )
 
-@bot.command(name="list-events")
-async def list_events_command(ctx: commands.Context):
-    if not isinstance(ctx.author, discord.Member) or not is_operations_staff(ctx.author):
-        await ctx.send(
-            embed=make_embed(
-                f"{VR_CROSS} Permission Denied",
-                "You do not have permission to list Vertex Air flight events.",
-            )
-        )
-        return
-
-    departure_channel = ctx.guild.get_channel(DEPARTURE_CHANNEL_ID)
-
-    if not isinstance(departure_channel, discord.TextChannel):
-        await ctx.send(
-            embed=make_embed(
-                f"{VR_CROSS} Channel Not Found",
-                "The configured departure channel could not be found.",
-            )
-        )
-        return
-
-    # Remove the saved message ID so the bot sends a fresh schedule message.
-    cursor.execute(
-        "DELETE FROM bot_config WHERE key = 'schedule_message_id'"
-    )
-    db.commit()
-
-    await update_departure_schedule_message()
-
-    await ctx.send(
-        embed=make_embed(
-            f"{VR_TICK} Events Listed",
-            f"The flight schedule has been posted again in {departure_channel.mention}.",
-        )
-    )
 
 @bot.event
 async def on_scheduled_event_delete(event: discord.ScheduledEvent):
@@ -1122,8 +1200,14 @@ async def on_scheduled_event_delete(event: discord.ScheduledEvent):
     )
     db.commit()
 
-    await update_departure_schedule_message()
-    
+    cursor.execute(
+        "SELECT value FROM bot_config WHERE key = 'schedule_message_id'"
+    )
+    saved_message = cursor.fetchone()
+    if saved_message:
+        await update_departure_schedule_message()
+
+
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user} | Vertex Air Customer Core online")
