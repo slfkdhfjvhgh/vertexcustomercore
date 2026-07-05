@@ -1111,11 +1111,6 @@ async def list_events_command(ctx: commands.Context):
     )
 
 
-@refresh_schedule.before_loop
-async def before_refresh_schedule():
-    await bot.wait_until_ready()
-
-
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user} | Vertex Air Customer Core online")
