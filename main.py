@@ -718,7 +718,16 @@ async def update_departure_schedule_message():
     if not isinstance(channel, discord.TextChannel):
         return
 
-    cursor.execute("SELECT * FROM flights WHERE status = 'scheduled' ORDER BY start_timestamp ASC")
+    cursor.execute(
+        """
+        SELECT *
+        FROM flights
+        WHERE status = 'scheduled'
+          AND start_timestamp >= ?
+        ORDER BY start_timestamp ASC
+        """,
+        (utc_now_ts(),),
+    )
     flights = cursor.fetchall()
 
     today = datetime.now(LOCAL_TZ).date()
@@ -947,7 +956,7 @@ async def schedule_command(ctx: commands.Context):
         return
 
     start_time = datetime.fromtimestamp(start_timestamp, tz=timezone.utc)
-    end_time = start_time + timedelta(hours=2)
+    end_time = start_time + timedelta(hours=1)
 
     event_description = (
         f"**{LOGO} Flight Scheduled**\n\n"
@@ -1188,6 +1197,139 @@ async def lock_command(ctx: commands.Context, *, flight_number: str):
     )
 
 
+@bot.command(name="complete")
+async def complete_command(ctx: commands.Context, *, flight_number: str):
+    if not isinstance(ctx.author, discord.Member) or not is_operations_staff(ctx.author):
+        await ctx.send(
+            embed=make_embed(
+                f"{VR_CROSS} Permission Denied",
+                "You do not have permission to complete Vertex Air flights.",
+            )
+        )
+        return
+
+    cursor.execute(
+        """
+        SELECT * FROM flights
+        WHERE LOWER(flight_number) = LOWER(?)
+          AND status = 'scheduled'
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (flight_number.strip(),),
+    )
+    flight = cursor.fetchone()
+
+    if not flight:
+        await ctx.send(
+            embed=make_embed(
+                f"{VR_CROSS} Flight Not Found",
+                f"No active scheduled flight was found with flight number `{flight_number}`.",
+            )
+        )
+        return
+
+    cursor.execute(
+        """
+        UPDATE flights
+        SET status = 'completed'
+        WHERE id = ?
+        """,
+        (flight["id"],),
+    )
+    db.commit()
+
+    # Mark the Discord scheduled event as completed when possible.
+    try:
+        event = await ctx.guild.fetch_scheduled_event(int(flight["event_id"]))
+        if event.status == discord.EventStatus.active:
+            await event.end(reason=f"Flight completed by {ctx.author}")
+        elif event.status == discord.EventStatus.scheduled:
+            await event.edit(
+                status=discord.EventStatus.completed,
+                reason=f"Flight completed by {ctx.author}",
+            )
+    except Exception:
+        # The database still updates even if Discord does not allow
+        # the event status to be changed.
+        pass
+
+    await update_departure_schedule_message()
+
+    await ctx.send(
+        embed=make_embed(
+            f"{VR_TICK} Flight Completed",
+            (
+                f"Flight **{flight['flight_number']}** has been marked as completed "
+                "and removed from the departure schedule."
+            ),
+        )
+    )
+
+
+@bot.command(name="cancel")
+async def cancel_command(ctx: commands.Context, *, flight_number: str):
+    if not isinstance(ctx.author, discord.Member) or not is_operations_staff(ctx.author):
+        await ctx.send(
+            embed=make_embed(
+                f"{VR_CROSS} Permission Denied",
+                "You do not have permission to cancel Vertex Air flights.",
+            )
+        )
+        return
+
+    cursor.execute(
+        """
+        SELECT * FROM flights
+        WHERE LOWER(flight_number) = LOWER(?)
+          AND status = 'scheduled'
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (flight_number.strip(),),
+    )
+    flight = cursor.fetchone()
+
+    if not flight:
+        await ctx.send(
+            embed=make_embed(
+                f"{VR_CROSS} Flight Not Found",
+                f"No active scheduled flight was found with flight number `{flight_number}`.",
+            )
+        )
+        return
+
+    # Update the database first so the deletion listener cannot leave
+    # the flight in an active state.
+    cursor.execute(
+        """
+        UPDATE flights
+        SET status = 'cancelled'
+        WHERE id = ?
+        """,
+        (flight["id"],),
+    )
+    db.commit()
+
+    try:
+        event = await ctx.guild.fetch_scheduled_event(int(flight["event_id"]))
+        await event.delete(reason=f"Flight cancelled by {ctx.author}")
+    except Exception:
+        pass
+
+    await update_departure_schedule_message()
+
+    await ctx.send(
+        embed=make_embed(
+            f"{VR_TICK} Flight Cancelled",
+            (
+                f"Flight **{flight['flight_number']}** has been cancelled "
+                "and removed from the departure schedule."
+            ),
+        )
+    )
+
+
 @bot.event
 async def on_scheduled_event_delete(event: discord.ScheduledEvent):
     cursor.execute(
@@ -1280,7 +1422,7 @@ async def on_command_error(ctx: commands.Context, error: commands.CommandError):
     await ctx.send(
         embed=make_embed(
             f"{VR_CROSS} Command Error",
-            f"`{type(error).__name__}: {error}`",
+            f"An unexpected error occurred.\n\n`{type(error).__name__}: {error}`",
         )
     )
     raise error
